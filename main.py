@@ -1,6 +1,7 @@
 import os
 import uuid
 from datetime import datetime
+from pdf_processor import extract_text_from_pdf, chunk_pages
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -52,29 +53,24 @@ def list_documents():
 async def upload_pdf(file: UploadFile = File(...)):
     """Upload a PDF: save to Supabase Storage, create a row in the documents table."""
 
-    # 1. Validate file type
     if file.content_type != "application/pdf":
         raise HTTPException(
             status_code=400,
             detail=f"Only PDF files are allowed. Got: {file.content_type}",
         )
 
-    # 2. Read file contents into memory
     contents = await file.read()
     file_size = len(contents)
 
-    # 3. Validate file size
     if file_size > MAX_FILE_SIZE_BYTES:
         raise HTTPException(
             status_code=400,
             detail=f"File too large. Max size: {MAX_FILE_SIZE_MB} MB. Got: {file_size / 1024 / 1024:.2f} MB",
         )
 
-    # 4. Generate a unique storage path: YYYY/MM/DD/<uuid>.pdf
     today = datetime.utcnow()
     storage_path = f"{today.year}/{today.month:02d}/{today.day:02d}/{uuid.uuid4()}.pdf"
 
-    # 5. Upload to Supabase Storage
     try:
         supabase.storage.from_(PDF_BUCKET).upload(
             path=storage_path,
@@ -84,7 +80,6 @@ async def upload_pdf(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Storage upload failed: {str(e)}")
 
-    # 6. Insert a row in the documents table
     try:
         response = supabase.table("documents").insert({
             "filename": file.filename,
@@ -93,8 +88,6 @@ async def upload_pdf(file: UploadFile = File(...)):
             "status": "pending",
         }).execute()
     except Exception as e:
-        # If DB insert fails, we should ideally delete the orphan file from storage.
-        # For now, just surface the error.
         raise HTTPException(status_code=500, detail=f"Database insert failed: {str(e)}")
 
     document = response.data[0]
@@ -106,4 +99,106 @@ async def upload_pdf(file: UploadFile = File(...)):
         "file_size_bytes": document["file_size_bytes"],
         "status": document["status"],
         "uploaded_at": document["uploaded_at"],
+    }
+
+@app.post("/process/{document_id}")
+async def process_pdf(document_id: str):
+    """Process a PDF: download from storage, extract text page-by-page."""
+
+    doc_response = supabase.table("documents").select("*").eq("id", document_id).execute()
+
+    if not doc_response.data:
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+
+    document = doc_response.data[0]
+
+    try:
+        pdf_bytes = supabase.storage.from_(PDF_BUCKET).download(document["storage_path"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to download PDF from storage: {str(e)}")
+
+    try:
+        pages = extract_text_from_pdf(pdf_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF text extraction failed: {str(e)}")
+
+    return {
+        "document_id": document_id,
+        "filename": document["filename"],
+        "page_count": len(pages),
+        "total_characters": sum(len(p["text"]) for p in pages),
+        "pages": pages,
+    }
+
+@app.post("/extract-and-chunk/{document_id}")
+async def extract_and_chunk(document_id: str):
+    """Extract text from a PDF, chunk it, and save chunks to the database.
+
+    This is the main document processing endpoint — it transforms an uploaded
+    PDF into rows in the chunks table, ready for embedding in the next pipeline step.
+    """
+    from datetime import datetime, timezone
+
+    doc_response = supabase.table("documents").select("*").eq("id", document_id).execute()
+
+    if not doc_response.data:
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+
+    document = doc_response.data[0]
+
+    try:
+        pdf_bytes = supabase.storage.from_(PDF_BUCKET).download(document["storage_path"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Storage download failed: {str(e)}")
+
+    try:
+        pages = extract_text_from_pdf(pdf_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF text extraction failed: {str(e)}")
+
+    try:
+        chunks = chunk_pages(pages)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chunking failed: {str(e)}")
+
+    if not chunks:
+        raise HTTPException(status_code=422, detail="No chunks generated (PDF may be empty or unreadable)")
+
+    try:
+        supabase.table("chunks").delete().eq("document_id", document_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear existing chunks: {str(e)}")
+
+    chunk_rows = [
+        {
+            "document_id": document_id,
+            "chunk_index": chunk["chunk_index"],
+            "content": chunk["content"],
+            "page_number": chunk["page_number"],
+            "token_count": chunk["char_count"] // 4,  
+        }
+        for chunk in chunks
+    ]
+
+    try:
+        supabase.table("chunks").insert(chunk_rows).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to insert chunks: {str(e)}")
+
+    try:
+        supabase.table("documents").update({
+            "page_count": len(pages),
+            "status": "chunked",
+            "processed_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", document_id).execute()
+    except Exception:
+        pass
+
+    return {
+        "document_id": document_id,
+        "filename": document["filename"],
+        "page_count": len(pages),
+        "chunk_count": len(chunks),
+        "avg_chunk_size": sum(c["char_count"] for c in chunks) // len(chunks),
+        "status": "chunked",
     }
