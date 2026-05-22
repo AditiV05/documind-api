@@ -2,6 +2,7 @@ import os
 import uuid
 from datetime import datetime
 from pdf_processor import extract_text_from_pdf, chunk_pages
+from embeddings import embed_batch
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -211,4 +212,57 @@ async def extract_and_chunk(document_id: str):
         "chunk_count": len(chunks),
         "avg_chunk_size": sum(c["char_count"] for c in chunks) // len(chunks),
         "status": "chunked",
+    }
+
+
+@app.post("/embed/{document_id}")
+async def embed_document(document_id: str):
+    """Generate embeddings for all chunks of a document and save them to the DB."""
+
+    # 1. Fetch the document's chunks, ordered by chunk_index
+    chunk_response = (
+        supabase.table("chunks")
+        .select("id, content, chunk_index")
+        .eq("document_id", document_id)
+        .order("chunk_index")
+        .execute()
+    )
+
+    chunks = chunk_response.data
+
+    if not chunks:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No chunks found for document: {document_id}",
+        )
+
+    # 2. Embed all chunk contents in one batched API call
+    texts = [chunk["content"] for chunk in chunks]
+    try:
+        embeddings = embed_batch(texts)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}")
+
+    # 3. Save each embedding back to its chunk row
+    try:
+        for chunk, embedding in zip(chunks, embeddings):
+            supabase.table("chunks").update(
+                {"embedding": embedding}
+            ).eq("id", chunk["id"]).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save embeddings: {str(e)}")
+
+    # 4. Update document status
+    try:
+        supabase.table("documents").update(
+            {"status": "embedded"}
+        ).eq("id", document_id).execute()
+    except Exception:
+        pass
+
+    return {
+        "document_id": document_id,
+        "chunks_embedded": len(chunks),
+        "embedding_dimensions": len(embeddings[0]),
+        "status": "embedded",
     }
