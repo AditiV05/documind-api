@@ -5,6 +5,7 @@ from pdf_processor import extract_text_from_pdf, chunk_pages
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from supabase_client import supabase
 
@@ -15,6 +16,15 @@ app = FastAPI(
     description="Backend service for DocuMind — handles PDF processing, embeddings, retrieval, and LLM calls.",
     version="0.1.0",
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # Constants
 PDF_BUCKET = "pdfs"
