@@ -10,18 +10,27 @@ CHAT_MODEL = "gpt-4o-mini"
 
 
 def generate_answer(question: str, context_chunks: list[str]) -> str:
-    """Generate an answer to a question using retrieved context chunks."""
+    """Generate an answer with inline [N] citations referencing context chunks."""
 
-    # Join the retrieved chunks into one context block
-    context = "\n\n---\n\n".join(context_chunks)
+    # Number each chunk so the model can cite by index
+    numbered_context = "\n\n".join(
+        f"[{i}] {chunk}" for i, chunk in enumerate(context_chunks, start=1)
+    )
 
     system_prompt = (
         "You are a helpful assistant that answers questions based ONLY on the "
-        "provided context. If the context does not contain the answer, say so "
-        "clearly. Do not make up information."
+        "provided numbered context chunks. Each chunk is labeled with a number "
+        "like [1], [2], etc.\n\n"
+        "When you state a fact, cite the chunk it came from using its number in "
+        "square brackets, e.g. 'She uses FastAPI [1].' Cite every factual claim. "
+        "If the context does not contain the answer, say so clearly. "
+        "Do not make up information."
     )
 
-    user_prompt = f"Context:\n{context}\n\nQuestion: {question}\n\nAnswer:"
+    user_prompt = (
+        f"Context chunks:\n{numbered_context}\n\n"
+        f"Question: {question}\n\nAnswer (with [N] citations):"
+    )
 
     response = client.chat.completions.create(
         model=CHAT_MODEL,
