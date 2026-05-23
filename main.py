@@ -9,6 +9,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from supabase_client import supabase
+from llm import generate_answer
 
 load_dotenv()
 
@@ -382,4 +383,57 @@ async def hybrid_search(request: SearchRequest):
         "fts_count": len(fts_response.data),
         "fused_count": len(fused),
         "results": fused[: request.match_count],
+    }
+
+@app.post("/answer")
+async def answer_question(request: SearchRequest):
+    """Full RAG: hybrid search for context, then generate an answer."""
+
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    # 1. Hybrid search — embed query, run vector + keyword search
+    try:
+        query_embedding = embed_text(request.query)
+        vector_response = supabase.rpc(
+            "match_chunks",
+            {"query_embedding": query_embedding, "match_count": request.match_count},
+        ).execute()
+        fts_response = supabase.rpc(
+            "match_chunks_fts",
+            {"query_text": request.query, "match_count": request.match_count},
+        ).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Retrieval failed: {str(e)}")
+
+    # 2. Fuse with RRF
+    fused = reciprocal_rank_fusion(vector_response.data, fts_response.data)
+    top_chunks = fused[: request.match_count]
+
+    if not top_chunks:
+        return {
+            "query": request.query,
+            "answer": "No relevant information found in the documents.",
+            "sources": [],
+        }
+
+    # 3. Generate an answer from the retrieved chunks
+    context_texts = [chunk["content"] for chunk in top_chunks]
+    try:
+        answer = generate_answer(request.query, context_texts)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Answer generation failed: {str(e)}")
+
+    return {
+        "query": request.query,
+        "answer": answer,
+        "sources": [
+            {
+                "id": chunk["id"],
+                "document_id": chunk["document_id"],
+                "page_number": chunk["page_number"],
+                "chunk_index": chunk["chunk_index"],
+            }
+            for chunk in top_chunks
+        ],
     }
