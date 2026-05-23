@@ -304,3 +304,82 @@ async def search_chunks(request: SearchRequest):
         "result_count": len(response.data),
         "results": response.data,
     }
+
+def reciprocal_rank_fusion(
+    vector_results: list[dict],
+    fts_results: list[dict],
+    k: int = 60,
+) -> list[dict]:
+    """Fuse two ranked result lists using Reciprocal Rank Fusion.
+
+    Each chunk gets a score of 1/(k + rank) from each list it appears in.
+    Scores are summed; chunks ranking well in BOTH lists rise to the top.
+    """
+    scores: dict[str, float] = {}
+    chunk_data: dict[str, dict] = {}
+
+    # Score the vector search results by their rank position
+    for rank, chunk in enumerate(vector_results, start=1):
+        chunk_id = chunk["id"]
+        scores[chunk_id] = scores.get(chunk_id, 0) + 1 / (k + rank)
+        chunk_data[chunk_id] = chunk
+
+    # Score the FTS results by their rank position
+    for rank, chunk in enumerate(fts_results, start=1):
+        chunk_id = chunk["id"]
+        scores[chunk_id] = scores.get(chunk_id, 0) + 1 / (k + rank)
+        chunk_data[chunk_id] = chunk
+
+    # Sort all chunks by fused score, highest first
+    ranked_ids = sorted(scores.keys(), key=lambda cid: scores[cid], reverse=True)
+
+    fused = []
+    for chunk_id in ranked_ids:
+        chunk = chunk_data[chunk_id]
+        fused.append({
+            "id": chunk["id"],
+            "document_id": chunk["document_id"],
+            "content": chunk["content"],
+            "page_number": chunk["page_number"],
+            "chunk_index": chunk["chunk_index"],
+            "rrf_score": scores[chunk_id],
+        })
+    return fused
+
+
+@app.post("/hybrid-search")
+async def hybrid_search(request: SearchRequest):
+    """Hybrid retrieval: vector search + keyword search, fused via RRF."""
+
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    # 1. Vector search — embed the query, call match_chunks
+    try:
+        query_embedding = embed_text(request.query)
+        vector_response = supabase.rpc(
+            "match_chunks",
+            {"query_embedding": query_embedding, "match_count": request.match_count},
+        ).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Vector search failed: {str(e)}")
+
+    # 2. Keyword search — call match_chunks_fts
+    try:
+        fts_response = supabase.rpc(
+            "match_chunks_fts",
+            {"query_text": request.query, "match_count": request.match_count},
+        ).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Keyword search failed: {str(e)}")
+
+    # 3. Fuse the two ranked lists with RRF
+    fused = reciprocal_rank_fusion(vector_response.data, fts_response.data)
+
+    return {
+        "query": request.query,
+        "vector_count": len(vector_response.data),
+        "fts_count": len(fts_response.data),
+        "fused_count": len(fused),
+        "results": fused[: request.match_count],
+    }
