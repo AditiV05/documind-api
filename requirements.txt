@@ -1,6 +1,7 @@
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.13.0
+backoff==2.2.1
 cachetools==6.2.6
 certifi==2026.4.22
 cffi==2.0.0
@@ -11,6 +12,7 @@ deprecation==2.1.0
 distro==1.9.0
 fastapi==0.136.1
 fsspec==2026.4.0
+googleapis-common-protos==1.75.0
 h11==0.16.0
 h2==4.3.0
 hpack==4.1.0
@@ -20,14 +22,22 @@ httpx==0.28.1
 hyperframe==6.1.0
 idna==3.13
 jiter==0.15.0
+langfuse==4.6.1
 markdown-it-py==4.2.0
 mdurl==0.1.2
 mmh3==5.2.1
 multidict==6.7.1
 openai==2.38.0
+opentelemetry-api==1.42.1
+opentelemetry-exporter-otlp-proto-common==1.42.1
+opentelemetry-exporter-otlp-proto-http==1.42.1
+opentelemetry-proto==1.42.1
+opentelemetry-sdk==1.42.1
+opentelemetry-semantic-conventions==0.63b1
 packaging==26.2
 postgrest==2.30.0
 propcache==0.5.2
+protobuf==6.33.6
 pycparser==3.0
 pydantic==2.13.4
 pydantic-core==2.46.4
@@ -62,5 +72,6 @@ uvicorn==0.46.0
 uvloop==0.22.1
 watchfiles==1.1.1
 websockets==15.0.1
+wrapt==1.17.3
 yarl==1.23.0
 zstandard==0.25.0
