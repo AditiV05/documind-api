@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 from datetime import datetime
 from pdf_processor import extract_text_from_pdf, chunk_pages
 from embeddings import embed_batch, embed_text
@@ -9,7 +10,8 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from supabase_client import supabase
-from llm import generate_answer
+from fastapi.responses import StreamingResponse
+from llm import generate_answer, generate_answer_stream
 
 load_dotenv()
 
@@ -437,3 +439,54 @@ async def answer_question(request: SearchRequest):
             for chunk in top_chunks
         ],
     }
+
+@app.post("/answer-stream")
+async def answer_question_stream(request: SearchRequest):
+    """Streaming RAG: hybrid search, then stream the generated answer."""
+
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    # 1. Retrieve context (same as /answer)
+    try:
+        query_embedding = embed_text(request.query)
+        vector_response = supabase.rpc(
+            "match_chunks",
+            {"query_embedding": query_embedding, "match_count": request.match_count},
+        ).execute()
+        fts_response = supabase.rpc(
+            "match_chunks_fts",
+            {"query_text": request.query, "match_count": request.match_count},
+        ).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Retrieval failed: {str(e)}")
+
+    fused = reciprocal_rank_fusion(vector_response.data, fts_response.data)
+    top_chunks = fused[: request.match_count]
+
+    # 2. Build a generator that streams text, then sends sources at the end
+    def event_stream():
+        if not top_chunks:
+            yield "data: " + json.dumps({
+                "type": "answer",
+                "content": "No relevant information found in the documents.",
+            }) + "\n\n"
+        else:
+            context_texts = [chunk["content"] for chunk in top_chunks]
+            for token in generate_answer_stream(request.query, context_texts):
+                yield "data: " + json.dumps({"type": "answer", "content": token}) + "\n\n"
+
+        # Final event: the sources
+        sources = [
+            {
+                "id": c["id"],
+                "document_id": c["document_id"],
+                "page_number": c["page_number"],
+                "chunk_index": c["chunk_index"],
+            }
+            for c in top_chunks
+        ]
+        yield "data: " + json.dumps({"type": "sources", "sources": sources}) + "\n\n"
+        yield "data: " + json.dumps({"type": "done"}) + "\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
