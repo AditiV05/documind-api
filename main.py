@@ -2,7 +2,7 @@ import os
 import uuid
 from datetime import datetime
 from pdf_processor import extract_text_from_pdf, chunk_pages
-from embeddings import embed_batch
+from embeddings import embed_batch, embed_text
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -219,7 +219,6 @@ async def extract_and_chunk(document_id: str):
 async def embed_document(document_id: str):
     """Generate embeddings for all chunks of a document and save them to the DB."""
 
-    # 1. Fetch the document's chunks, ordered by chunk_index
     chunk_response = (
         supabase.table("chunks")
         .select("id, content, chunk_index")
@@ -265,4 +264,43 @@ async def embed_document(document_id: str):
         "chunks_embedded": len(chunks),
         "embedding_dimensions": len(embeddings[0]),
         "status": "embedded",
+    }
+
+from pydantic import BaseModel
+
+
+class SearchRequest(BaseModel):
+    query: str
+    match_count: int = 5
+
+
+@app.post("/search")
+async def search_chunks(request: SearchRequest):
+    """Embed a query and return the most semantically similar chunks."""
+
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    # 1. Embed the query text
+    try:
+        query_embedding = embed_text(request.query)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to embed query: {str(e)}")
+
+    # 2. Call the match_chunks SQL function via RPC
+    try:
+        response = supabase.rpc(
+            "match_chunks",
+            {
+                "query_embedding": query_embedding,
+                "match_count": request.match_count,
+            },
+        ).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Vector search failed: {str(e)}")
+
+    return {
+        "query": request.query,
+        "result_count": len(response.data),
+        "results": response.data,
     }
