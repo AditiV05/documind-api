@@ -1,9 +1,7 @@
 """PDF text extraction utilities using PyMuPDF (fitz)."""
 
 from typing import TypedDict
-
 import fitz  
-
 
 class PageContent(TypedDict):
     page_number: int  
@@ -27,6 +25,8 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> list[PageContent]:
         for page_index in range(pdf_doc.page_count):
             page = pdf_doc[page_index]
             text = page.get_text()
+            # Strip null bytes — Postgres text columns can't store \x00
+            text = text.replace("\x00", "")
             pages.append({
                 "page_number": page_index + 1,  
                 "text": text.strip(),
