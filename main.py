@@ -8,6 +8,7 @@ from embeddings import embed_batch, embed_text
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from supabase_client import supabase
 from fastapi.responses import StreamingResponse
@@ -144,6 +145,35 @@ async def process_pdf(document_id: str):
         "pages": pages,
     }
 
+def _embed_chunks(document_id: str) -> int:
+    """Embed all chunks for a document and save the vectors. Returns count embedded.
+    Shared by /embed and /extract-and-chunk (auto-embed)."""
+    chunk_response = (
+        supabase.table("chunks")
+        .select("id, content, chunk_index")
+        .eq("document_id", document_id)
+        .order("chunk_index")
+        .execute()
+    )
+    chunks = chunk_response.data
+    if not chunks:
+        raise HTTPException(status_code=404, detail=f"No chunks found for document: {document_id}")
+
+    texts = [c["content"] for c in chunks]
+    try:
+        embeddings = embed_batch(texts)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}")
+
+    try:
+        for chunk, embedding in zip(chunks, embeddings):
+            supabase.table("chunks").update({"embedding": embedding}).eq("id", chunk["id"]).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save embeddings: {str(e)}")
+
+    supabase.table("documents").update({"status": "embedded"}).eq("id", document_id).execute()
+    return len(chunks)
+
 @app.post("/extract-and-chunk/{document_id}")
 async def extract_and_chunk(document_id: str):
     """Extract text from a PDF, chunk it, and save chunks to the database.
@@ -208,69 +238,25 @@ async def extract_and_chunk(document_id: str):
     except Exception:
         pass
 
+    # Auto-embed right after chunking so there's no separate step.
+    chunks_embedded = _embed_chunks(document_id)
+
     return {
         "document_id": document_id,
         "filename": document["filename"],
         "page_count": len(pages),
         "chunk_count": len(chunks),
+        "chunks_embedded": chunks_embedded,
         "avg_chunk_size": sum(c["char_count"] for c in chunks) // len(chunks),
-        "status": "chunked",
+        "status": "embedded",
     }
 
 
 @app.post("/embed/{document_id}")
 async def embed_document(document_id: str):
     """Generate embeddings for all chunks of a document and save them to the DB."""
-
-    chunk_response = (
-        supabase.table("chunks")
-        .select("id, content, chunk_index")
-        .eq("document_id", document_id)
-        .order("chunk_index")
-        .execute()
-    )
-
-    chunks = chunk_response.data
-
-    if not chunks:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No chunks found for document: {document_id}",
-        )
-
-    # 2. Embed all chunk contents in one batched API call
-    texts = [chunk["content"] for chunk in chunks]
-    try:
-        embeddings = embed_batch(texts)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}")
-
-    # 3. Save each embedding back to its chunk row
-    try:
-        for chunk, embedding in zip(chunks, embeddings):
-            supabase.table("chunks").update(
-                {"embedding": embedding}
-            ).eq("id", chunk["id"]).execute()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save embeddings: {str(e)}")
-
-    # 4. Update document status
-    try:
-        supabase.table("documents").update(
-            {"status": "embedded"}
-        ).eq("id", document_id).execute()
-    except Exception:
-        pass
-
-    return {
-        "document_id": document_id,
-        "chunks_embedded": len(chunks),
-        "embedding_dimensions": len(embeddings[0]),
-        "status": "embedded",
-    }
-
-from pydantic import BaseModel
-
+    count = _embed_chunks(document_id)
+    return {"document_id": document_id, "chunks_embedded": count, "status": "embedded"}
 
 class SearchRequest(BaseModel):
     query: str
