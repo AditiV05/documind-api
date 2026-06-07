@@ -261,6 +261,7 @@ async def embed_document(document_id: str):
 class SearchRequest(BaseModel):
     query: str
     match_count: int = 5
+    document_id: str | None = None
 
 
 @app.post("/search")
@@ -276,13 +277,14 @@ async def search_chunks(request: SearchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to embed query: {str(e)}")
 
-    # 2. Call the match_chunks SQL function via RPC
+     # 2. Call the match_chunks SQL function via RPC
     try:
         response = supabase.rpc(
             "match_chunks",
             {
                 "query_embedding": query_embedding,
                 "match_count": request.match_count,
+                "filter_document_id": request.document_id,
             },
         ).execute()
     except Exception as e:
@@ -348,7 +350,7 @@ async def hybrid_search(request: SearchRequest):
         query_embedding = embed_text(request.query)
         vector_response = supabase.rpc(
             "match_chunks",
-            {"query_embedding": query_embedding, "match_count": request.match_count},
+            {"query_embedding": query_embedding, "match_count": request.match_count, "filter_document_id": request.document_id},
         ).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Vector search failed: {str(e)}")
@@ -357,7 +359,7 @@ async def hybrid_search(request: SearchRequest):
     try:
         fts_response = supabase.rpc(
             "match_chunks_fts",
-            {"query_text": request.query, "match_count": request.match_count},
+            {"query_text": request.query, "match_count": request.match_count, "filter_document_id": request.document_id},
         ).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Keyword search failed: {str(e)}")
@@ -385,11 +387,11 @@ async def answer_question(request: SearchRequest):
         query_embedding = embed_text(request.query)
         vector_response = supabase.rpc(
             "match_chunks",
-            {"query_embedding": query_embedding, "match_count": request.match_count},
+           {"query_embedding": query_embedding, "match_count": request.match_count, "filter_document_id": request.document_id},
         ).execute()
         fts_response = supabase.rpc(
             "match_chunks_fts",
-            {"query_text": request.query, "match_count": request.match_count},
+            {"query_text": request.query, "match_count": request.match_count, "filter_document_id": request.document_id},
         ).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Retrieval failed: {str(e)}")
@@ -438,11 +440,11 @@ async def answer_question_stream(request: SearchRequest):
         query_embedding = embed_text(request.query)
         vector_response = supabase.rpc(
             "match_chunks",
-            {"query_embedding": query_embedding, "match_count": request.match_count},
+            {"query_embedding": query_embedding, "match_count": request.match_count, "filter_document_id": request.document_id},
         ).execute()
         fts_response = supabase.rpc(
             "match_chunks_fts",
-            {"query_text": request.query, "match_count": request.match_count},
+            {"query_text": request.query, "match_count": request.match_count, "filter_document_id": request.document_id},
         ).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Retrieval failed: {str(e)}")
