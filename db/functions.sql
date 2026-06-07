@@ -14,9 +14,12 @@
 -- Returns the top `match_count` chunks ranked by cosine similarity
 -- against the provided query embedding.
 
+drop function if exists match_chunks(vector, integer);
+
 create or replace function match_chunks(
   query_embedding vector,
-  match_count integer
+  match_count integer,
+  filter_document_id uuid default null
 )
 returns table (
   id uuid,
@@ -37,10 +40,11 @@ as $$
     1 - (chunks.embedding <=> query_embedding) as similarity
   from chunks
   where chunks.embedding is not null
+    and (filter_document_id is null or chunks.document_id = filter_document_id)
   order by chunks.embedding <=> query_embedding
   limit match_count;
 $$;
-
+  
 
 -- =====================================================================
 -- match_chunks_fts: full-text search using Postgres tsvector
@@ -50,9 +54,12 @@ $$;
 -- Assumes the `chunks` table has a `tsv` tsvector column populated
 -- from the chunk content.
 
+drop function if exists match_chunks_fts(text, integer);
+
 create or replace function match_chunks_fts(
   query_text text,
-  match_count integer
+  match_count integer,
+  filter_document_id uuid default null
 )
 returns table (
   id uuid,
@@ -73,6 +80,7 @@ as $$
     ts_rank(chunks.tsv, websearch_to_tsquery('english', query_text)) as rank
   from chunks
   where chunks.tsv @@ websearch_to_tsquery('english', query_text)
+    and (filter_document_id is null or chunks.document_id = filter_document_id)
   order by rank desc
   limit match_count;
 $$;
