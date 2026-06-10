@@ -8,7 +8,7 @@ from embeddings import embed_batch, embed_text
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from supabase_client import supabase
 from fastapi.responses import StreamingResponse
@@ -52,17 +52,6 @@ def config_check():
         "supabase_service_role_key_set": bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY")),
         "database_url_set": bool(os.getenv("DATABASE_URL")),
     }
-
-
-@app.get("/documents")
-def list_documents():
-    """List all documents in the database."""
-    response = supabase.table("documents").select("*").execute()
-    return {
-        "count": len(response.data),
-        "documents": response.data,
-    }
-
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -261,7 +250,7 @@ async def embed_document(document_id: str):
 class SearchRequest(BaseModel):
     query: str
     match_count: int = 5
-    document_id: str | None = None
+    document_id: str = Field(..., min_length=1)
 
 
 @app.post("/search")
