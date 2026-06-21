@@ -33,7 +33,7 @@ app.add_middleware(
 
 # Constants
 PDF_BUCKET = "pdfs"
-MAX_FILE_SIZE_MB = 50
+MAX_FILE_SIZE_MB = 10
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
 
@@ -65,6 +65,12 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     contents = await file.read()
     file_size = len(contents)
+
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    if not contents.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="File is not a valid PDF.")
 
     if file_size > MAX_FILE_SIZE_BYTES:
         raise HTTPException(
@@ -176,7 +182,7 @@ async def extract_and_chunk(document_id: str):
 
     if not doc_response.data:
         raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
-
+    
     document = doc_response.data[0]
 
     try:
@@ -186,6 +192,8 @@ async def extract_and_chunk(document_id: str):
 
     try:
         pages = extract_text_from_pdf(pdf_bytes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF text extraction failed: {str(e)}")
 
