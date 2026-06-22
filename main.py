@@ -1,7 +1,7 @@
 import os
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pdf_processor import extract_text_from_pdf, chunk_pages
 from embeddings import embed_batch, embed_text
 
@@ -35,6 +35,7 @@ app.add_middleware(
 PDF_BUCKET = "pdfs"
 MAX_FILE_SIZE_MB = 10
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+CLEANUP_AGE_MINUTES = 30
 
 
 @app.get("/health")
@@ -53,9 +54,50 @@ def config_check():
         "database_url_set": bool(os.getenv("DATABASE_URL")),
     }
 
+def cleanup_expired_documents():
+    """Delete documents older than CLEANUP_AGE_MINUTES — storage file, chunks, and row.
+    Storage files are removed via the Storage API (direct SQL deletes are blocked by Supabase).
+    Best-effort: never blocks an upload if a step fails."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=CLEANUP_AGE_MINUTES)).isoformat()
+
+    try:
+        expired = (
+            supabase.table("documents")
+            .select("id, storage_path")
+            .lt("uploaded_at", cutoff)
+            .execute()
+        ).data
+    except Exception:
+        return
+
+    if not expired:
+        return
+
+    storage_paths = [d["storage_path"] for d in expired if d.get("storage_path")]
+    doc_ids = [d["id"] for d in expired]
+
+    if storage_paths:
+        try:
+            supabase.storage.from_(PDF_BUCKET).remove(storage_paths)
+        except Exception:
+            pass
+
+    try:
+        supabase.table("chunks").delete().in_("document_id", doc_ids).execute()
+    except Exception:
+        pass
+
+    try:
+        supabase.table("documents").delete().in_("id", doc_ids).execute()
+    except Exception:
+        pass
+
+
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
     """Upload a PDF: save to Supabase Storage, create a row in the documents table."""
+
+    cleanup_expired_documents()
 
     if file.content_type != "application/pdf":
         raise HTTPException(
@@ -176,7 +218,7 @@ async def extract_and_chunk(document_id: str):
     This is the main document processing endpoint — it transforms an uploaded
     PDF into rows in the chunks table, ready for embedding in the next pipeline step.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     doc_response = supabase.table("documents").select("*").eq("id", document_id).execute()
 
