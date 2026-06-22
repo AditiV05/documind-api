@@ -1,12 +1,15 @@
 import os
 import uuid
 import json
+import time
+from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 from pdf_processor import extract_text_from_pdf, chunk_pages
 from embeddings import embed_batch, embed_text
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -29,6 +32,66 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---- Rate limiting (in-memory, per instance) ----
+RATE_LIMITED_PREFIXES = (
+    "/upload", "/extract-and-chunk", "/embed",
+    "/search", "/hybrid-search", "/answer", "/answer-stream",
+)
+PER_IP_PER_MINUTE = 15
+PER_IP_PER_HOUR = 100
+GLOBAL_PER_DAY = 500
+
+_ip_hits: dict[str, deque] = defaultdict(deque)
+_global_hits: deque = deque()
+
+
+def _client_ip(request: Request) -> str:
+    # Railway sits behind a proxy, so prefer the forwarded client IP.
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_rate_limit(ip: str) -> tuple[bool, str]:
+    now = time.time()
+
+    # Global daily cap — the real backstop for the OpenAI bill
+    while _global_hits and now - _global_hits[0] > 86400:
+        _global_hits.popleft()
+    if len(_global_hits) >= GLOBAL_PER_DAY:
+        return True, "Daily usage limit reached. Please try again tomorrow."
+
+    # Per-IP limits
+    hits = _ip_hits[ip]
+    while hits and now - hits[0] > 3600:
+        hits.popleft()
+    if sum(1 for t in hits if now - t < 60) >= PER_IP_PER_MINUTE:
+        return True, "Too many requests. Please wait a minute and try again."
+    if len(hits) >= PER_IP_PER_HOUR:
+        return True, "Hourly request limit reached. Please try again later."
+
+    hits.append(now)
+    _global_hits.append(now)
+    return False, ""
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    path = request.url.path
+    if request.method == "POST" and any(
+        path == p or path.startswith(p + "/") for p in RATE_LIMITED_PREFIXES
+    ):
+        limited, message = _check_rate_limit(_client_ip(request))
+        if limited:
+            origin = request.headers.get("origin")
+            headers = {}
+            if origin:
+                headers["Access-Control-Allow-Origin"] = origin
+                headers["Access-Control-Allow-Credentials"] = "true"
+            return JSONResponse(status_code=429, content={"detail": message}, headers=headers)
+    return await call_next(request)
 
 
 # Constants
