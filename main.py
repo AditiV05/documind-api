@@ -580,3 +580,31 @@ async def answer_question_stream(request: SearchRequest):
         yield "data: " + json.dumps({"type": "done"}) + "\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+@app.delete("/documents/{document_id}")
+async def delete_document(document_id: str):
+    """Delete a document immediately — storage file, chunks, and row.
+    Lets a user remove their upload on demand instead of waiting for auto-cleanup."""
+    doc_response = supabase.table("documents").select("storage_path").eq("id", document_id).execute()
+    if not doc_response.data:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    storage_path = doc_response.data[0].get("storage_path")
+
+    if storage_path:
+        try:
+            supabase.storage.from_(PDF_BUCKET).remove([storage_path])
+        except Exception:
+            pass
+
+    try:
+        supabase.table("chunks").delete().eq("document_id", document_id).execute()
+    except Exception:
+        pass
+
+    try:
+        supabase.table("documents").delete().eq("id", document_id).execute()
+    except Exception:
+        pass
+
+    return {"deleted": True, "document_id": document_id}
