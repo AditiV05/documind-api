@@ -265,9 +265,19 @@ def _embed_chunks(document_id: str) -> int:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}")
 
+    rows = [
+        {
+            "id": chunk["id"],
+            "document_id": document_id,
+            "chunk_index": chunk["chunk_index"],
+            "content": chunk["content"],
+            "embedding": embedding,
+        }
+        for chunk, embedding in zip(chunks, embeddings)
+    ]
     try:
-        for chunk, embedding in zip(chunks, embeddings):
-            supabase.table("chunks").update({"embedding": embedding}).eq("id", chunk["id"]).execute()
+        for i in range(0, len(rows), 100):
+            supabase.table("chunks").upsert(rows[i:i + 100]).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save embeddings: {str(e)}")
 

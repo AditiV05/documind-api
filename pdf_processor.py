@@ -3,7 +3,7 @@
 from typing import TypedDict
 import fitz
 
-MAX_PAGES = 30
+MAX_PAGES = 120
 
 
 class PageContent(TypedDict):
