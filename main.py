@@ -535,6 +535,7 @@ async def answer_question(request: SearchRequest):
                 "document_id": chunk["document_id"],
                 "page_number": chunk["page_number"],
                 "chunk_index": chunk["chunk_index"],
+                "content": chunk["content"],
             }
             for chunk in top_chunks
         ],
@@ -583,6 +584,7 @@ async def answer_question_stream(request: SearchRequest):
                 "document_id": c["document_id"],
                 "page_number": c["page_number"],
                 "chunk_index": c["chunk_index"],
+                "content": c["content"],
             }
             for c in top_chunks
         ]
